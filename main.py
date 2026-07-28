@@ -21,8 +21,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEB_URL = os.getenv("WEB_URL")
 
 
-
+# =====================
 # Firebase
+# =====================
 
 cred = credentials.Certificate("firebase.json")
 
@@ -32,7 +33,9 @@ db = firestore.client()
 
 
 
+# =====================
 # Flask
+# =====================
 
 app = Flask(__name__)
 
@@ -43,7 +46,9 @@ def home():
 
 
 
+# =====================
 # Telegram Bot
+# =====================
 
 bot = Client(
     "song_room_bot",
@@ -65,7 +70,9 @@ def generate_room():
 
 
 
-# Start Command
+# =====================
+# Commands
+# =====================
 
 @bot.on_message(filters.command("start") & filters.private)
 async def start(client, message):
@@ -83,7 +90,7 @@ Features:
 • 👑 Host controls
 • ⚡ Real-time sync
 
-Add me to your group and use:
+Use in group:
 
 /roomsng
 
@@ -92,8 +99,6 @@ Enjoy music together 🎶
     )
 
 
-
-# Create Room
 
 @bot.on_message(filters.command("roomsng") & filters.group)
 async def room_create(client, message):
@@ -149,14 +154,16 @@ async def room_create(client, message):
 🆔 Room ID:
 `{rid}`
 
-Invite your friends and listen together 🎶
+Invite your friends 🎶
 """,
         reply_markup=keyboard
     )
 
 
 
-# Run Pyrogram in Thread
+# =====================
+# Start Pyrogram
+# =====================
 
 def run_bot():
 
@@ -164,7 +171,21 @@ def run_bot():
 
     asyncio.set_event_loop(loop)
 
-    bot.run()
+
+    async def start_bot():
+
+        await bot.start()
+
+        print("✅ Telegram Bot Started")
+
+
+        while True:
+
+            await asyncio.sleep(1000)
+
+
+
+    loop.run_until_complete(start_bot())
 
 
 
@@ -175,7 +196,9 @@ threading.Thread(
 
 
 
-# Run Flask
+# =====================
+# Start Flask
+# =====================
 
 if __name__ == "__main__":
 
