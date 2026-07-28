@@ -1,0 +1,6 @@
+pyrogram
+tgcrypto
+firebase-admin
+python-dotenv
+flask
+gunicorn
