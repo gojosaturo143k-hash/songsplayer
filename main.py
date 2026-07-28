@@ -2,6 +2,7 @@ import os
 import random
 import string
 import threading
+import asyncio
 
 from flask import Flask
 from dotenv import load_dotenv
@@ -20,9 +21,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEB_URL = os.getenv("WEB_URL")
 
 
+
 # Firebase
 
 cred = credentials.Certificate("firebase.json")
+
 firebase_admin.initialize_app(cred)
 
 db = firestore.client()
@@ -62,7 +65,7 @@ def generate_room():
 
 
 
-# Start Message DM
+# Start Command
 
 @bot.on_message(filters.command("start") & filters.private)
 async def start(client, message):
@@ -95,7 +98,6 @@ Enjoy music together 🎶
 @bot.on_message(filters.command("roomsng") & filters.group)
 async def room_create(client, message):
 
-
     rid = generate_room()
 
 
@@ -111,11 +113,13 @@ async def room_create(client, message):
 
         "active": True,
 
-        "members":[message.from_user.id],
+        "members": [
+            message.from_user.id
+        ],
 
         "song": None,
 
-        "status":"paused"
+        "status": "paused"
 
     })
 
@@ -136,7 +140,7 @@ async def room_create(client, message):
 
 
     await message.reply_text(
-f"""
+        f"""
 🎵 **Music Room Created**
 
 👑 Host:
@@ -147,12 +151,18 @@ f"""
 
 Invite your friends and listen together 🎶
 """,
-reply_markup=keyboard
-)
+        reply_markup=keyboard
+    )
 
 
+
+# Run Pyrogram in Thread
 
 def run_bot():
+
+    loop = asyncio.new_event_loop()
+
+    asyncio.set_event_loop(loop)
 
     bot.run()
 
@@ -165,8 +175,11 @@ threading.Thread(
 
 
 
+# Run Flask
+
 if __name__ == "__main__":
+
     app.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT",5000))
+        port=int(os.environ.get("PORT", 5000))
     )
