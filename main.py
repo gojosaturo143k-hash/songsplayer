@@ -26,7 +26,6 @@ WEB_URL = os.getenv("WEB_URL")
 # =====================
 
 cred = credentials.Certificate("firebase.json")
-
 firebase_admin.initialize_app(cred)
 
 db = firestore.client()
@@ -34,7 +33,7 @@ db = firestore.client()
 
 
 # =====================
-# Flask
+# Flask Server
 # =====================
 
 app = Flask(__name__)
@@ -83,18 +82,17 @@ async def start(client, message):
 
 Hello {message.from_user.first_name} 👋
 
-Create realtime music rooms with your friends.
+Create realtime music rooms with friends.
 
 Features:
 • 🎧 Group listening rooms
 • 👑 Host controls
 • ⚡ Real-time sync
 
-Use in group:
-
+Use:
 /roomsng
 
-Enjoy music together 🎶
+Enjoy 🎶
 """
     )
 
@@ -109,21 +107,14 @@ async def room_create(client, message):
     db.collection("rooms").document(rid).set({
 
         "roomId": rid,
-
         "hostId": message.from_user.id,
-
         "hostName": message.from_user.first_name,
-
         "chatId": message.chat.id,
-
         "active": True,
-
         "members": [
             message.from_user.id
         ],
-
         "song": None,
-
         "status": "paused"
 
     })
@@ -162,17 +153,16 @@ Invite your friends 🎶
 
 
 # =====================
-# Start Pyrogram
+# Pyrogram Thread
 # =====================
 
 def run_bot():
 
     loop = asyncio.new_event_loop()
-
     asyncio.set_event_loop(loop)
 
 
-    async def start_bot():
+    async def runner():
 
         await bot.start()
 
@@ -180,12 +170,10 @@ def run_bot():
 
 
         while True:
-
             await asyncio.sleep(1000)
 
 
-
-    loop.run_until_complete(start_bot())
+    loop.run_until_complete(runner())
 
 
 
