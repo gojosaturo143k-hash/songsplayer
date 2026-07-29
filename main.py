@@ -42,23 +42,28 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==========================================
-# 2. FIREBASE INITIALIZATION (FIXED)
+# 2. FIREBASE INITIALIZATION (ENV METHOD)
 # ==========================================
 
 try:
-    # Read the firebase.json file manually as a dictionary
-    with open("firebase.json", "r") as f:
-        cred_dict = json.load(f)
+    # Read credentials directly from Environment Variable to avoid file corruption issues
+    firebase_creds_json = os.getenv("FIREBASE_CREDS")
+    
+    if not firebase_creds_json:
+        logging.critical("FIREBASE_CREDS environment variable is missing in Render!")
+        sys.exit(1)
         
-    # Initialize with dictionary (Bypasses all Firestore Security Rules)
+    # Parse string to dictionary
+    cred_dict = json.loads(firebase_creds_json)
     cred = credentials.Certificate(cred_dict)
     
     if not firebase_admin._apps:
         firebase_admin.initialize_app(cred)
-    
+        
     # Initialize Firestore database
     db = firestore.client()
-    logger.info("Firebase initialized successfully.")
+    logger.info("Firebase initialized successfully via Environment Variable.")
+    
 except Exception as e:
     logger.critical(f"Failed to initialize Firebase: {e}")
     sys.exit(1)
@@ -138,7 +143,7 @@ async def cmd_roomsng(message: Message):
     }
     
     try:
-        # FIX: Firebase is synchronous, so we MUST run it in a thread 
+        # Firebase is synchronous, so we MUST run it in a thread 
         # otherwise it blocks Aiogram's async event loop and fails silently.
         def save_to_firebase():
             doc_ref = db.collection("rooms").document(room_id)
