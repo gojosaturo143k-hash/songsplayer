@@ -18,7 +18,11 @@ import config
 # FIREBASE INITIALIZATION
 # ==========================================
 try:
-    cred_dict = json.loads(config.FIREBASE_CREDENTIALS_JSON)
+    raw_json = config.FIREBASE_CREDENTIALS_JSON.strip()
+    if (raw_json.startswith('"') and raw_json.endswith('"')) or (raw_json.startswith("'") and raw_json.endswith("'")):
+        raw_json = raw_json[1:-1]
+        
+    cred_dict = json.loads(raw_json)
     cred = credentials.Certificate(cred_dict)
     firebase_app = initialize_app(cred)
     db = firestore.client()
@@ -38,9 +42,6 @@ def index():
 @flask_app.route("/health")
 def health():
     return "OK", 200
-
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=config.PORT, use_reloader=False)
 
 # ==========================================
 # PYROGRAM BOT CLIENT
@@ -82,7 +83,7 @@ def get_or_create_user(telegram_id: int, username: str):
         
     return user_ref, user_ref.get().to_dict()
 
-def safe_send_message(client, chat_id, text, reply_markup=None, retries=3):
+def safe_send_message(client, text, chat_id, reply_markup=None, retries=3):
     """Handles Telegram API FloodWait limits automatically."""
     for attempt in range(retries):
         try:
@@ -117,7 +118,7 @@ async def start_command(client, message):
         [InlineKeyboardButton("👤 My Profile", callback_data="show_profile"),
          InlineKeyboardButton("❓ Help", callback_data="show_help")]
     ])
-    safe_send_message(client, message.chat.id, text, reply_markup=markup)
+    safe_send_message(client, text, message.chat.id, reply_markup=markup)
 
 
 @app.on_message(filters.command("horsebet") & filters.private)
@@ -131,13 +132,13 @@ async def horsebet_command(client, message):
     markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("🎮 Play Now", url=config.WEB_URL)]
     ])
-    safe_send_message(client, message.chat.id, text, reply_markup=markup)
+    safe_send_message(client, text, message.chat.id, reply_markup=markup)
 
 
 @app.on_message(filters.command("link") & filters.private)
 async def link_command(client, message):
     if not db:
-        return safe_send_message(client, message.chat.id, "Database error. Please try again later.")
+        return safe_send_message(client, "Database error. Please try again later.", message.chat.id)
         
     code = f"RHR-{random.randint(100000, 999999)}"
     now = datetime.now(timezone.utc)
@@ -158,17 +159,17 @@ async def link_command(client, message):
         f"⏳ This code expires in 10 minutes and can only be used once.\n\n"
         f"Paste this inside the website to link your account."
     )
-    safe_send_message(client, message.chat.id, text)
+    safe_send_message(client, text, message.chat.id)
 
 
 @app.on_message(filters.command("profile") & filters.private)
 async def profile_command(client, message):
     if not db:
-        return safe_send_message(client, message.chat.id, "Database error.")
+        return safe_send_message(client, "Database error.", message.chat.id)
         
     user_ref, user_data = get_or_create_user(message.from_user.id, message.from_user.username)
     if not user_data:
-        return safe_send_message(client, message.chat.id, "Could not fetch profile.")
+        return safe_send_message(client, "Could not fetch profile.", message.chat.id)
 
     total = user_data.get("wins", 0) + user_data.get("losses", 0)
     win_rate = (user_data.get("wins", 0) / total * 100) if total > 0 else 0.0
@@ -189,27 +190,27 @@ async def profile_command(client, message):
         f"🌟 Highest: {user_data.get('highest_streak', 0)}\n\n"
         f"🏆 <b>Biggest Win:</b> {user_data.get('biggest_win', 0):,} coins"
     )
-    safe_send_message(client, message.chat.id, text)
+    safe_send_message(client, text, message.chat.id)
 
 
 @app.on_message(filters.command("give") & filters.private)
 async def give_command(client, message):
     if not db:
-        return safe_send_message(client, message.chat.id, "Database error.")
+        return safe_send_message(client, "Database error.", message.chat.id)
         
     try:
         parts = message.text.split()
         if len(parts) != 3:
-            return safe_send_message(client, message.chat.id, "Usage: /give <username> <amount>")
+            return safe_send_message(client, "Usage: /give <username> <amount>", message.chat.id)
 
         target_username = parts[1].lstrip("@")
         amount = int(parts[2])
 
         if amount <= 0:
-            return safe_send_message(client, message.chat.id, "Amount must be a positive number.")
+            return safe_send_message(client, "Amount must be a positive number.", message.chat.id)
 
         if target_username == (message.from_user.username or ""):
-            return safe_send_message(client, message.chat.id, "You cannot send coins to yourself.")
+            return safe_send_message(client, "You cannot send coins to yourself.", message.chat.id)
 
         # Firestore Transaction for safe balance transfer
         @firestore.transactional
@@ -242,33 +243,30 @@ async def give_command(client, message):
 
         sender_ref = db.collection("users").document(str(message.from_user.id))
         
-        # Find receiver by username (assuming username is stored in a document with ID = telegram_id)
-        # Note: For massive scale, a dedicated username index is better, but this is fine for standard games.
         users_ref = db.collection("users").where("username", "==", target_username).limit(1).get()
         if not users_ref:
-            return safe_send_message(client, message.chat.id, f"❌ User @{target_username} does not play Royal Horse Race.")
+            return safe_send_message(client, f"❌ User @{target_username} does not play Royal Horse Race.", message.chat.id)
             
         receiver_ref = users_ref[0].reference
 
         transaction = db.transaction()
         transaction(transfer_coins, sender_ref, receiver_ref, amount)
 
-        safe_send_message(client, message.chat.id, f"✅ <b>Transfer Successful!</b>\n\nYou sent <b>{amount:,}</b> coins to @{target_username}.")
+        safe_send_message(client, f"✅ <b>Transfer Successful!</b>\n\nYou sent <b>{amount:,}</b> coins to @{target_username}.", message.chat.id)
 
     except ValueError as e:
-        safe_send_message(client, message.chat.id, f"❌ {str(e)}")
+        safe_send_message(client, f"❌ {str(e)}", message.chat.id)
     except Exception as e:
         print(f"Transfer error: {e}")
-        safe_send_message(client, message.chat.id, "❌ An error occurred during the transfer.")
+        safe_send_message(client, "❌ An error occurred during the transfer.", message.chat.id)
 
 
 @app.on_message(filters.command("leaderboard") & filters.private)
 async def leaderboard_command(client, message):
     if not db:
-        return safe_send_message(client, message.chat.id, "Database error.")
+        return safe_send_message(client, "Database error.", message.chat.id)
 
     try:
-        # Fetch top 10 users sorted by wins, then by balance
         users_stream = db.collection("users").order_by("wins", direction=firestore.DESCENDING).order_by("balance", direction=firestore.DESCENDING).limit(10).stream()
         
         text = "🏆 <b>Royal Horse Race Leaderboard</b> 🏆\n\n"
@@ -280,10 +278,10 @@ async def leaderboard_command(client, message):
             text += f"{medal} <b>{data.get('username', 'Unknown')}</b>\n"
             text += f"   👑 {data.get('royal_rank', 'Bronze')} | ✅ {data.get('wins', 0)} Wins | 💰 {data.get('balance', 0):,} coins\n\n"
 
-        safe_send_message(client, message.chat.id, text)
+        safe_send_message(client, text, message.chat.id)
     except Exception as e:
         print(f"Leaderboard error: {e}")
-        safe_send_message(client, message.chat.id, "Failed to load leaderboard.")
+        safe_send_message(client, "Failed to load leaderboard.", message.chat.id)
 
 
 @app.on_message(filters.command("help") & filters.private)
@@ -300,11 +298,11 @@ async def help_command(client, message):
         "/help - Show this help message\n\n"
         "⚠️ <b>Note:</b> This is a virtual entertainment game. All coins are fictional. No real money or gambling involved."
     )
-    safe_send_message(client, message.chat.id, text)
+    safe_send_message(client, text, message.chat.id)
 
 
 # ==========================================
-# CALLBACK QUERY HANDLERS (For Inline Buttons)
+# CALLBACK QUERY HANDLERS
 # ==========================================
 @app.on_callback_query()
 async def callback_handler(client, callback_query):
@@ -317,16 +315,42 @@ async def callback_handler(client, callback_query):
 
 
 # ==========================================
-# MAIN EXECUTION
+# PYROGRAM BACKGROUND RUNNER
+# ==========================================
+def run_pyrogram():
+    """Function to safely start Pyrogram in a background thread with its own event loop."""
+    # Create a new event loop for this specific thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    print("Starting Pyrogram client in background...")
+    try:
+        loop.run_until_complete(app.start())
+        loop.run_forever()
+    except Exception as e:
+        print(f"Pyrogram stopped: {e}")
+
+# ==========================================
+# FLASK STARTUP HOOK (Triggers Bot)
+# ==========================================
+@flask_app.before_request
+def initialize():
+    """This runs exactly once when the first request (like Render's /health check) hits the server."""
+    if not flask_app._got_first_request:
+        # Start Pyrogram in a separate daemon thread
+        bot_thread = threading.Thread(target=run_pyrogram, daemon=True)
+        bot_thread.start()
+        print("Pyrogram background thread spawned.")
+
+# ==========================================
+# MAIN EXECUTION BLOCK (For local testing only)
 # ==========================================
 if __name__ == "__main__":
-    print("Starting Royal Horse Race Bot...")
+    print("Starting Royal Horse Race Bot Locally...")
     
-    # Start Flask in a separate daemon thread so it doesn't block Pyrogram
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    print(f"Flask health server started on port {config.PORT}")
-
-    # Start Pyrogram Bot
-    print("Starting Pyrogram client...")
-    app.run()
+    # Start Pyrogram thread first
+    bot_thread = threading.Thread(target=run_pyrogram, daemon=True)
+    bot_thread.start()
+    
+    # Then start Flask
+    flask_app.run(host="0.0.0.0", port=config.PORT, use_reloader=False)
