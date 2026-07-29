@@ -1,5 +1,4 @@
-pyrogram
-tgcrypto
+aiogram==3.20.0
 firebase-admin
 python-dotenv
 flask
