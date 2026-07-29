@@ -3,11 +3,12 @@ import json
 import random
 import threading
 import time
+import os
 from datetime import datetime, timedelta, timezone
 
 import pyrogram
 from firebase_admin import credentials, firestore, initialize_app
-from flask import Flask, jsonify
+from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -31,7 +32,7 @@ except Exception as e:
     db = None
 
 # ==========================================
-# FLASK APP (For Render Health Check)
+# FLASK APP
 # ==========================================
 flask_app = Flask(__name__)
 
@@ -44,7 +45,7 @@ def health():
     return "OK", 200
 
 # ==========================================
-# PYROGRAM BOT CLIENT
+# PYROGRAM CLIENT
 # ==========================================
 app = Client(
     "royal_horse_race_bot",
@@ -57,7 +58,6 @@ app = Client(
 # HELPER FUNCTIONS
 # ==========================================
 def get_or_create_user(telegram_id: int, username: str):
-    """Ensures user exists in Firestore, returns user doc reference."""
     if not db:
         return None, None
     user_ref = db.collection("users").document(str(telegram_id))
@@ -67,7 +67,7 @@ def get_or_create_user(telegram_id: int, username: str):
         user_ref.set({
             "telegram_id": telegram_id,
             "username": username or "Unknown",
-            "balance": 1000,  # Starting bonus
+            "balance": 1000,
             "loan": 0,
             "wins": 0,
             "losses": 0,
@@ -84,7 +84,6 @@ def get_or_create_user(telegram_id: int, username: str):
     return user_ref, user_ref.get().to_dict()
 
 def safe_send_message(client, text, chat_id, reply_markup=None, retries=3):
-    """Handles Telegram API FloodWait limits automatically."""
     for attempt in range(retries):
         try:
             return client.send_message(chat_id, text, reply_markup=reply_markup, disable_web_page_preview=True)
@@ -212,7 +211,6 @@ async def give_command(client, message):
         if target_username == (message.from_user.username or ""):
             return safe_send_message(client, "You cannot send coins to yourself.", message.chat.id)
 
-        # Firestore Transaction for safe balance transfer
         @firestore.transactional
         def transfer_coins(transaction, sender_ref, receiver_ref, amount):
             sender_doc = sender_ref.get(transaction=transaction)
@@ -227,12 +225,10 @@ async def give_command(client, message):
             if sender_data.get("balance", 0) < amount:
                 raise ValueError("Insufficient balance.")
 
-            # Update balances
             transaction.update(sender_ref, {"balance": sender_data["balance"] - amount})
             receiver_data = receiver_doc.to_dict()
             transaction.update(receiver_ref, {"balance": receiver_data["balance"] + amount})
 
-            # Log transaction
             db.collection("transactions").add({
                 "sender_id": str(message.from_user.id),
                 "receiver_username": target_username,
@@ -242,13 +238,11 @@ async def give_command(client, message):
             })
 
         sender_ref = db.collection("users").document(str(message.from_user.id))
-        
         users_ref = db.collection("users").where("username", "==", target_username).limit(1).get()
         if not users_ref:
             return safe_send_message(client, f"❌ User @{target_username} does not play Royal Horse Race.", message.chat.id)
             
         receiver_ref = users_ref[0].reference
-
         transaction = db.transaction()
         transaction(transfer_coins, sender_ref, receiver_ref, amount)
 
@@ -301,9 +295,6 @@ async def help_command(client, message):
     safe_send_message(client, text, message.chat.id)
 
 
-# ==========================================
-# CALLBACK QUERY HANDLERS
-# ==========================================
 @app.on_callback_query()
 async def callback_handler(client, callback_query):
     if callback_query.data == "show_profile":
@@ -318,11 +309,8 @@ async def callback_handler(client, callback_query):
 # PYROGRAM BACKGROUND RUNNER
 # ==========================================
 def run_pyrogram():
-    """Function to safely start Pyrogram in a background thread with its own event loop."""
-    # Create a new event loop for this specific thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
     print("Starting Pyrogram client in background...")
     try:
         loop.run_until_complete(app.start())
@@ -331,26 +319,21 @@ def run_pyrogram():
         print(f"Pyrogram stopped: {e}")
 
 # ==========================================
-# FLASK STARTUP HOOK (Triggers Bot)
+# SMART AUTO-START TRIGGER
 # ==========================================
-@flask_app.before_request
-def initialize():
-    """This runs exactly once when the first request (like Render's /health check) hits the server."""
-    if not flask_app._got_first_request:
-        # Start Pyrogram in a separate daemon thread
-        bot_thread = threading.Thread(target=run_pyrogram, daemon=True)
-        bot_thread.start()
-        print("Pyrogram background thread spawned.")
+# Yeh line tab automatically execute hoti hai jab Render/Gunicorn 
+# is file ko load karta hai (Flask ke start hone se pehle).
+
+if os.environ.get("RUN_MAIN") or os.environ.get("WEB_CONCURRENCY"):
+    bot_thread = threading.Thread(target=run_pyrogram, daemon=True)
+    bot_thread.start()
+    print("Gunicorn/Render detected. Bot thread spawned automatically.")
 
 # ==========================================
-# MAIN EXECUTION BLOCK (For local testing only)
+# LOCAL TESTING EXECUTION
 # ==========================================
 if __name__ == "__main__":
     print("Starting Royal Horse Race Bot Locally...")
-    
-    # Start Pyrogram thread first
     bot_thread = threading.Thread(target=run_pyrogram, daemon=True)
     bot_thread.start()
-    
-    # Then start Flask
     flask_app.run(host="0.0.0.0", port=config.PORT, use_reloader=False)
