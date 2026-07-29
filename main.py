@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 import string
+import json
 from dotenv import load_dotenv
 
 # Import Flask for Render Web Service port binding
@@ -14,7 +15,6 @@ from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.client.default import DefaultBotProperties
-from aiogram import Bot
 
 # Import Firebase Admin SDK
 import firebase_admin
@@ -42,13 +42,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==========================================
-# 2. FIREBASE INITIALIZATION
+# 2. FIREBASE INITIALIZATION (FIXED)
 # ==========================================
 
 try:
-    # Read credentials from local firebase.json file
-    cred = credentials.Certificate("firebase.json")
-    firebase_admin.initialize_app(cred)
+    # Read the firebase.json file manually as a dictionary
+    with open("firebase.json", "r") as f:
+        cred_dict = json.load(f)
+        
+    # Initialize with dictionary (Bypasses all Firestore Security Rules)
+    cred = credentials.Certificate(cred_dict)
+    
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
     
     # Initialize Firestore database
     db = firestore.client()
@@ -132,9 +138,13 @@ async def cmd_roomsng(message: Message):
     }
     
     try:
-        # Save document to Firestore 'rooms' collection, using roomId as document ID
-        doc_ref = db.collection("rooms").document(room_id)
-        doc_ref.set(room_data)
+        # FIX: Firebase is synchronous, so we MUST run it in a thread 
+        # otherwise it blocks Aiogram's async event loop and fails silently.
+        def save_to_firebase():
+            doc_ref = db.collection("rooms").document(room_id)
+            doc_ref.set(room_data)
+            
+        await asyncio.to_thread(save_to_firebase)
         logger.info(f"Room {room_id} created in chat {chat_id} by user {user.id}")
         
     except Exception as e:
