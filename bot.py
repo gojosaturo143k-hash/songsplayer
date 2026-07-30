@@ -1,5 +1,7 @@
 import os
+import json
 import random
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 
@@ -268,7 +270,6 @@ async def link_callback(client, callback_query):
 
 def post_worker_init(worker):
     """Hook that starts Pyrogram when each Gunicorn worker spawns."""
-    import asyncio
     import threading
     
     def run_bot():
