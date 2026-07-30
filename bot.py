@@ -3,6 +3,7 @@ import json
 import random
 import threading
 import time
+import os
 from datetime import datetime, timedelta, timezone
 
 from firebase_admin import credentials, firestore, initialize_app
@@ -16,6 +17,7 @@ import config
 # ==========================================
 # FIREBASE INITIALIZATION
 # ==========================================
+db = None
 try:
     raw_json = config.FIREBASE_CREDENTIALS_JSON.strip()
     if (raw_json.startswith('"') and raw_json.endswith('"')) or (raw_json.startswith("'") and raw_json.endswith("'")):
@@ -24,12 +26,12 @@ try:
     cred = credentials.Certificate(cred_dict)
     firebase_app = initialize_app(cred)
     db = firestore.client()
+    print("✅ Firebase Connected Successfully!")
 except Exception as e:
-    print(f"Firebase initialization failed: {e}")
-    db = None
+    print(f"❌ Firebase initialization failed: {e}")
 
 # ==========================================
-# FLASK APP (Health Check for Render)
+# FLASK APP (Health Check)
 # ==========================================
 flask_app = Flask(__name__)
 
@@ -199,28 +201,39 @@ async def callback_handler(client, callback_query):
     await callback_query.answer()
 
 # ==========================================
-# BACKGROUND BOT RUNNER (ISOLATED THREAD)
+# PYROGRAM SAFE RUNNER
 # ==========================================
-def run_bot_in_thread():
-    # Is thread ko apna khud ka pura Async Event Loop dedo
+def run_pyrogram_safely():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    print("🚀 Attempting to start Telegram Bot...")
     try:
         loop.run_until_complete(app.start())
+        print("✅ Telegram Bot is LIVE and listening!")
         loop.run_forever()
     except Exception as e:
-        print(f"Bot thread stopped: {e}")
+        print(f"❌ Bot failed to start: {e}")
 
 # ==========================================
-# AUTO-START TRIGGER (Runs during module load)
+# GUNICORN PRELOAD FIX
 # ==========================================
-# Gunicorn jab bhi bot.py load karta hai, yeh line auto-execute hoti hai.
-# Yeh bot ko ek chhupi hui background thread mein daal deta hai.
-# Gunicorn ka apna sync thread safe rahega, aur bot ka apna async loop safe rahega.
-threading.Thread(target=run_bot_in_thread, daemon=True).start()
+# Yeh check isliye hai kyunki Render 'gunicorn --preload' use karta hai.
+# Isse bot sirf ek baar start hoga, worker fork hone pe dobara nahi hoga.
+_bot_thread_started = False
 
-# ==========================================
-# LOCAL TESTING ONLY
-# ==========================================
+def start_bot_if_needed():
+    global _bot_thread_started
+    # Sirf worker process mein start karo (Render pe iska matlab worker PID match karna)
+    if not _bot_thread_started and str(os.getpid()) == os.environ.get("WORKER_PID", str(os.getpid())):
+        _bot_thread_started = True
+        threading.Thread(target=run_pyrogram_safely, daemon=True).start()
+
+# Jab bhi Flask koi request handle kare, yeh check karega ki bot start hua ki nahi.
+@flask_app.before_request
+def ensure_bot_running():
+    start_bot_if_needed()
+
+# Fallback: Agar Flask route hit na ho toh bhi bot start ho jaye (Local testing ke liye)
 if __name__ == "__main__":
-    flask_app.run(host="0.0.0.0", port=config.PORT)
+    start_bot_if_needed()
+    flask_app.run(host="0.0.0.0", port=config.PORT, use_reloader=False)
