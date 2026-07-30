@@ -1,242 +1,295 @@
-import asyncio
-import json
-import random
-import threading
-import time
 import os
-from datetime import datetime, timedelta, timezone
+import random
+import logging
+from datetime import datetime, timezone, timedelta
 
-from firebase_admin import credentials, firestore, initialize_app
-from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from flask import Flask, jsonify
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 import config
 
-# ==========================================
-# FIREBASE INITIALIZATION
-# ==========================================
-db = None
+# --- Logging Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# --- Firebase Initialization ---
 try:
-    raw_json = config.FIREBASE_CREDENTIALS_JSON.strip()
-    if (raw_json.startswith('"') and raw_json.endswith('"')) or (raw_json.startswith("'") and raw_json.endswith("'")):
-        raw_json = raw_json[1:-1]
-    cred_dict = json.loads(raw_json)
+    cred_dict = json.loads(config.FIREBASE_CREDENTIALS_JSON)
     cred = credentials.Certificate(cred_dict)
-    firebase_app = initialize_app(cred)
+    firebase_admin.initialize_app(cred)
     db = firestore.client()
-    print("✅ Firebase Connected Successfully!")
+    logger.info("Firebase initialized successfully.")
 except Exception as e:
-    print(f"❌ Firebase initialization failed: {e}")
+    logger.error(f"Firebase initialization failed: {e}")
+    raise
 
-# ==========================================
-# FLASK APP (Health Check)
-# ==========================================
-flask_app = Flask(__name__)
+# --- Flask App Setup ---
+app = Flask(__name__)
 
-@flask_app.route("/")
+@app.route("/")
 def index():
     return "Royal Horse Race Bot Running"
 
-@flask_app.route("/health")
+@app.route("/health")
 def health():
-    return "OK", 200
+    return "OK"
 
-# ==========================================
-# PYROGRAM CLIENT
-# ==========================================
-app = Client(
+# --- Pyrogram Client Setup ---
+bot = Client(
     "royal_horse_race_bot",
     api_id=config.API_ID,
     api_hash=config.API_HASH,
     bot_token=config.BOT_TOKEN
 )
 
-# ==========================================
-# HELPER FUNCTIONS
-# ==========================================
-def get_or_create_user(telegram_id: int, username: str):
-    if not db: return None, None
-    user_ref = db.collection("users").document(str(telegram_id))
-    user_doc = user_ref.get()
-    if not user_doc.exists:
-        user_ref.set({
-            "telegram_id": telegram_id, "username": username or "Unknown", "balance": 1000,
-            "loan": 0, "wins": 0, "losses": 0, "biggest_win": 0, "current_streak": 0,
-            "highest_streak": 0, "total_bets": 0, "royal_rank": "Bronze", "created_at": firestore.SERVER_TIMESTAMP
-        })
-    elif username and user_doc.to_dict().get("username") != username:
-        user_ref.update({"username": username})
-    return user_ref, user_ref.get().to_dict()
+# --- Helper Functions ---
 
-def safe_send_message(client, text, chat_id, reply_markup=None, retries=3):
-    for attempt in range(retries):
-        try:
-            return client.send_message(chat_id, text, reply_markup=reply_markup, disable_web_page_preview=True)
-        except FloodWait as e:
-            time.sleep(e.value + 1)
-        except Exception as e:
-            print(f"Failed to send message: {e}")
-            break
-    return None
-
-# ==========================================
-# COMMAND HANDLERS
-# ==========================================
-@app.on_message(filters.command("start") & filters.private)
-async def start_command(client, message):
-    user = message.from_user
-    get_or_create_user(user.id, user.username)
-    text = (
-        f"👑 <b>Welcome to Royal Horse Race, {user.first_name}!</b>\n\n"
-        f"Step into the world of virtual equestrian racing. "
-        f"Breed, train, and race your majestic horses against players worldwide.\n\n"
-        f"🏅 All coins are strictly for entertainment. No real money involved!\n\n"
-        f"Choose an option below to begin your journey:"
-    )
-    markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎮 Play Royal Horse Race", url=config.WEB_URL)],
-        [InlineKeyboardButton("👤 My Profile", callback_data="show_profile"),
-         InlineKeyboardButton("❓ Help", callback_data="show_help")]
-    ])
-    safe_send_message(client, text, message.chat.id, reply_markup=markup)
-
-@app.on_message(filters.command("horsebet") & filters.private)
-async def horsebet_command(client, message):
-    text = "🏇 <b>Royal Horse Race</b>\n\nYour next race is waiting!\nPrepare your steed and place your bets to claim victory.\n\nClick the button below to open the game."
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("🎮 Play Now", url=config.WEB_URL)]])
-    safe_send_message(client, text, message.chat.id, reply_markup=markup)
-
-@app.on_message(filters.command("link") & filters.private)
-async def link_command(client, message):
-    if not db: return safe_send_message(client, "Database error.", message.chat.id)
-    code = f"RHR-{random.randint(100000, 999999)}"
-    now = datetime.now(timezone.utc)
-    db.collection("telegram_links").document(code).set({
-        "code": code, "telegram_id": message.from_user.id, "telegram_username": message.from_user.username or "Unknown",
-        "created_at": now, "expires_at": now + timedelta(minutes=10), "used": False
-    })
-    text = f"🔗 <b>Account Linking</b>\n\nYour verification code:\n<code>{code}</code>\n\n⏳ This code expires in 10 minutes and can only be used once.\n\nPaste this inside the website to link your account."
-    safe_send_message(client, text, message.chat.id)
-
-@app.on_message(filters.command("profile") & filters.private)
-async def profile_command(client, message):
-    if not db: return safe_send_message(client, "Database error.", message.chat.id)
-    user_ref, u = get_or_create_user(message.from_user.id, message.from_user.username)
-    if not u: return safe_send_message(client, "Could not fetch profile.", message.chat.id)
-    total = u.get("wins", 0) + u.get("losses", 0)
-    wr = (u.get("wins", 0) / total * 100) if total > 0 else 0.0
-    text = (
-        "👑 <b>Your Royal Profile</b>\n\n"
-        f"👤 <b>Username:</b> {u.get('username', 'N/A')}\n🏅 <b>Royal Rank:</b> {u.get('royal_rank', 'N/A')}\n"
-        f"💰 <b>Balance:</b> {u.get('balance', 0):,} coins\n🏦 <b>Loan:</b> {u.get('loan', 0):,} coins\n\n"
-        f"📊 <b>Statistics:</b>\n✅ Wins: {u.get('wins', 0)}\n❌ Losses: {u.get('losses', 0)}\n📈 Win Rate: {wr:.1f}%\n"
-        f"🎯 Total Bets: {u.get('total_bets', 0)}\n\n🔥 <b>Streaks:</b>\n⚡ Current: {u.get('current_streak', 0)}\n"
-        f"🌟 Highest: {u.get('highest_streak', 0)}\n\n🏆 <b>Biggest Win:</b> {u.get('biggest_win', 0):,} coins"
-    )
-    safe_send_message(client, text, message.chat.id)
-
-@app.on_message(filters.command("give") & filters.private)
-async def give_command(client, message):
-    if not db: return safe_send_message(client, "Database error.", message.chat.id)
+async def safe_send_message(client, chat_id, text, reply_markup=None):
+    """Safely sends a message handling FloodWait exceptions."""
     try:
-        parts = message.text.split()
-        if len(parts) != 3: return safe_send_message(client, "Usage: /give <username> <amount>", message.chat.id)
-        target_username = parts[1].lstrip("@")
-        amount = int(parts[2])
-        if amount <= 0: return safe_send_message(client, "Amount must be positive.", message.chat.id)
-        if target_username == (message.from_user.username or ""): return safe_send_message(client, "Cannot send to yourself.", message.chat.id)
-
-        @firestore.transactional
-        def transfer(transaction, s_ref, r_ref, amt):
-            s_doc, r_doc = s_ref.get(transaction=transaction), r_ref.get(transaction=transaction)
-            if not s_doc.exists or not r_doc.exists: raise ValueError("User not found.")
-            if s_doc.to_dict().get("balance", 0) < amt: raise ValueError("Insufficient balance.")
-            transaction.update(s_ref, {"balance": s_doc.to_dict()["balance"] - amt})
-            transaction.update(r_ref, {"balance": r_doc.to_dict()["balance"] + amt})
-            db.collection("transactions").add({"sender_id": str(message.from_user.id), "receiver_username": target_username, "amount": amt, "type": "transfer", "created_at": firestore.SERVER_TIMESTAMP})
-
-        s_ref = db.collection("users").document(str(message.from_user.id))
-        users = db.collection("users").where("username", "==", target_username).limit(1).get()
-        if not users: return safe_send_message(client, f"❌ User @{target_username} not found.", message.chat.id)
-        db.transaction()(transfer, s_ref, users[0].reference, amount)
-        safe_send_message(client, f"✅ <b>Transfer Successful!</b>\n\nSent <b>{amount:,}</b> coins to @{target_username}.", message.chat.id)
-    except ValueError as e: safe_send_message(client, f"❌ {str(e)}", message.chat.id)
-    except Exception as e: 
-        print(f"Transfer error: {e}")
-        safe_send_message(client, "❌ Transfer error.", message.chat.id)
-
-@app.on_message(filters.command("leaderboard") & filters.private)
-async def leaderboard_command(client, message):
-    if not db: return safe_send_message(client, "Database error.", message.chat.id)
-    try:
-        users_stream = db.collection("users").order_by("wins", direction=firestore.DESCENDING).order_by("balance", direction=firestore.DESCENDING).limit(10).stream()
-        text = "🏆 <b>Royal Horse Race Leaderboard</b> 🏆\n\n"
-        medals = ["🥇", "🥈", "🥉"]
-        for i, doc in enumerate(users_stream):
-            d = doc.to_dict()
-            m = medals[i] if i < 3 else f"<b>{i+1}.</b>"
-            text += f"{m} <b>{d.get('username', 'Unknown')}</b>\n   👑 {d.get('royal_rank', 'Bronze')} | ✅ {d.get('wins', 0)} Wins | 💰 {d.get('balance', 0):,} coins\n\n"
-        safe_send_message(client, text, message.chat.id)
+        await client.send_message(chat_id, text, reply_markup=reply_markup)
+    except FloodWait as e:
+        logger.warning(f"FloodWait encountered: sleeping for {e.value} seconds.")
+        await asyncio.sleep(e.value + 1)
+        await client.send_message(chat_id, text, reply_markup=reply_markup)
     except Exception as e:
-        print(f"LB error: {e}")
-        safe_send_message(client, "Failed to load leaderboard.", message.chat.id)
+        logger.error(f"Failed to send message to {chat_id}: {e}")
 
-@app.on_message(filters.command("help") & filters.private)
-async def help_command(client, message):
+
+def get_user(telegram_id):
+    """Fetches a linked user document from Firestore using telegram_id."""
+    users_ref = db.collection("users")
+    query = users_ref.where(filter=firestore.FieldFilter("telegram_id", "==", str(telegram_id))).limit(1)
+    docs = query.stream()
+    doc = next(docs, None)
+    return doc.to_dict() if doc else None
+
+
+def generate_link_code():
+    """Generates a unique 6-digit code for account linking."""
+    return f"RHR-{random.randint(100000, 999999)}"
+
+
+def find_user_by_username(username):
+    """Finds a user document in Firestore by their exact username."""
+    if not username:
+        return None
+    users_ref = db.collection("users")
+    query = users_ref.where(filter=firestore.FieldFilter("username", "==", username.lower())).limit(1)
+    docs = query.stream()
+    doc = next(docs, None)
+    return doc.reference if doc else None
+
+# --- Command Handlers ---
+
+@bot.on_message(filters.command("start") & filters.private)
+async def start_command(client, message):
+    """Handles the /start command with inline buttons."""
+    keyboard = [
+        [
+            {"text": "🎮 Play Royal Horse Race", "url": config.WEB_URL}
+        ],
+        [
+            {"text": "👤 Profile", "callback_data": "profile"},
+            {"text": "🔗 Link Account", "callback_data": "link"}
+        ]
+    ]
+    reply_markup = {"inline_keyboard": keyboard}
     text = (
-        "📖 <b>Royal Horse Race - Help Center</b>\n\n"
-        "/start - Open the main menu\n/horsebet - Quick link to place a bet\n/profile - View your statistics & balance\n"
-        "/link - Generate a code to link your web account\n/give - Transfer coins to another player\n"
-        "/leaderboard - View the top 10 players\n/help - Show this help message\n\n"
-        "⚠️ <b>Note:</b> This is a virtual entertainment game. All coins are fictional. No real money or gambling involved."
+        "Welcome to **Royal Horse Race**! 🏇\n\n"
+        "Bet on majestic horses, climb the ranks, and win big."
     )
-    safe_send_message(client, text, message.chat.id)
+    await safe_send_message(client, message.chat.id, text, reply_markup=reply_markup)
 
-@app.on_callback_query()
-async def callback_handler(client, callback_query):
-    if callback_query.data == "show_profile": await profile_command(client, callback_query.message)
-    elif callback_query.data == "show_help": await help_command(client, callback_query.message)
+
+@bot.on_message(filters.command("horsebet") & filters.private)
+async def horsebet_command(client, message):
+    """Handles the /horsebet command."""
+    keyboard = [[{"text": "🎮 Play Now", "url": config.WEB_URL}]]
+    reply_markup = {"inline_keyboard": keyboard}
+    text = "🏇 **Royal Horse Race**\n\nClick below to play."
+    await safe_send_message(client, message.chat.id, text, reply_markup=reply_markup)
+
+
+@bot.on_message(filters.command("link") & filters.private)
+async def link_command(client, message):
+    """Generates a unique, expiring link code and stores it in Firestore."""
+    telegram_id = message.from_user.id
+    telegram_username = message.from_user.username or "unknown"
+    
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=config.LINK_CODE_EXPIRATION_MINUTES)
+    code = generate_link_code()
+    
+    db.collection("telegram_links").document(code).set({
+        "code": code,
+        "telegram_id": str(telegram_id),
+        "telegram_username": telegram_username,
+        "created_at": now,
+        "expires_at": expires_at,
+        "used": False
+    })
+    
+    text = (
+        "Your verification code\n\n"
+        f"`{code}`\n\n"
+        "Paste this inside the website."
+    )
+    await safe_send_message(client, message.chat.id, text)
+
+
+@bot.on_message(filters.command("profile") & filters.private)
+async def profile_command(client, message):
+    """Displays the user's game profile if their account is linked."""
+    telegram_id = message.from_user.id
+    user = get_user(telegram_id)
+    
+    if not user:
+        await safe_send_message(
+            client, message.chat.id, 
+            "Your Telegram account is not linked yet."
+        )
+        return
+
+    wins = user.get("wins", 0)
+    losses = user.get("losses", 0)
+    total_bets = wins + losses
+    win_rate = (wins / total_bets * 100) if total_bets > 0 else 0.0
+
+    text = (
+        "👤 **Your Profile**\n\n"
+        f"**Username:** {user.get('username', 'N/A')}\n"
+        f"**Royal Rank:** {user.get('royal_rank', 'N/A')}\n"
+        f"**Balance:** ${user.get('balance', 0):,.2f}\n"
+        f"**Loan:** ${user.get('loan', 0):,.2f}\n\n"
+        f"**Wins:** {wins}\n"
+        f"**Losses:** {losses}\n"
+        f"**Total Bets:** {total_bets}\n"
+        f"**Win Rate:** {win_rate:.1f}%\n"
+        f"**Biggest Win:** ${user.get('biggest_win', 0):,.2f}"
+    )
+    await safe_send_message(client, message.chat.id, text)
+
+
+@bot.on_message(filters.command("give") & filters.private)
+async def give_command(client, message):
+    """Transfers funds to another user using a Firestore transaction."""
+    telegram_id = str(message.from_user.id)
+    
+    # Parse arguments: /give username amount
+    parts = message.text.split(maxsplit=2)
+    if len(parts) != 3:
+        await safe_send_message(client, message.chat.id, "Usage: /give username amount")
+        return
+
+    target_username = parts[1].lower().replace("@", "")
+    
+    try:
+        amount = float(parts[2])
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await safe_send_message(client, message.chat.id, "Amount must be a positive number.")
+        return
+
+    # Fetch sender and receiver references
+    sender_ref = None
+    users_ref = db.collection("users")
+    sender_query = users_ref.where(filter=firestore.FieldFilter("telegram_id", "==", telegram_id)).limit(1)
+    sender_doc = next(sender_query.stream(), None)
+    if sender_doc:
+        sender_ref = sender_doc.reference
+
+    receiver_ref = find_user_by_username(target_username)
+
+    # Validations
+    if not sender_ref:
+        await safe_send_message(client, message.chat.id, "Your Telegram account is not linked yet.")
+        return
+    if not receiver_ref:
+        await safe_send_message(client, message.chat.id, "Receiver does not exist.")
+        return
+    if sender_ref.id == receiver_ref.id:
+        await safe_send_message(client, message.chat.id, "You cannot send funds to yourself.")
+        return
+
+    # Firestore Transaction
+    @firestore.async_transactional
+    async def transfer_funds(transaction, s_ref, r_ref, transfer_amount):
+        s_snap = await s_ref.get(transaction=transaction)
+        r_snap = await r_ref.get(transaction=transaction)
+        
+        s_data = s_snap.to_dict()
+        r_data = r_snap.to_dict()
+        
+        current_balance = s_data.get("balance", 0)
+        if current_balance < transfer_amount:
+            return False  # Insufficient balance
+        
+        transaction.update(s_ref, {"balance": current_balance - transfer_amount})
+        transaction.update(r_ref, {"balance": r_data.get("balance", 0) + transfer_amount})
+        return True
+
+    try:
+        success = await transfer_funds(db.transaction(), sender_ref, receiver_ref, amount)
+        if success:
+            await safe_send_message(client, message.chat.id, "✅ **Transfer Successful**")
+        else:
+            await safe_send_message(client, message.chat.id, "❌ **Insufficient Balance**")
+    except Exception as e:
+        logger.error(f"Transfer failed: {e}")
+        await safe_send_message(client, message.chat.id, "An error occurred during the transfer.")
+
+
+# --- Callback Query Handlers ---
+
+@bot.on_callback_query(filters.regex("^profile$"))
+async def profile_callback(client, callback_query):
+    """Handles the Profile inline button press."""
+    await profile_command(client, callback_query.message)
     await callback_query.answer()
 
-# ==========================================
-# PYROGRAM SAFE RUNNER
-# ==========================================
-def run_pyrogram_safely():
-    print("🚀 Attempting to start Telegram Bot...")
-    try:
-        if not config.API_ID or not config.API_HASH or not config.BOT_TOKEN:
-            print("❌ Missing BOT_TOKEN, API_ID, or API_HASH in environment variables.")
-            return
-            
-        # YEH LINE SABSE ZAROORI HAI: Yeh bot ko forcefully start karega aur agar koi bhi 
-        # internal error hoga (API_ID galat, token invalid, etc) toh woh directly yahan print hoga.
-        app.run()
-        
-    except Exception as e:
-        print(f"❌ Bot failed to start: {e}")
 
-# ==========================================
-# GUNICORN PRELOAD FIX
-# ==========================================
-# Yeh check isliye hai kyunki Render 'gunicorn --preload' use karta hai.
-# Isse bot sirf ek baar start hoga, worker fork hone pe dobara nahi hoga.
-_bot_thread_started = False
+@bot.on_callback_query(filters.regex("^link$"))
+async def link_callback(client, callback_query):
+    """Handles the Link Account inline button press."""
+    await link_command(client, callback_query.message)
+    await callback_query.answer()
 
-def start_bot_if_needed():
-    global _bot_thread_started
-    # Sirf worker process mein start karo (Render pe iska matlab worker PID match karna)
-    if not _bot_thread_started and str(os.getpid()) == os.environ.get("WORKER_PID", str(os.getpid())):
-        _bot_thread_started = True
-        threading.Thread(target=run_pyrogram_safely, daemon=True).start()
 
-# Jab bhi Flask koi request handle kare, yeh check karega ki bot start hua ki nahi.
-@flask_app.before_request
-def ensure_bot_running():
-    start_bot_if_needed()
+# --- Application Runner ---
 
-# Fallback: Agar Flask route hit na ho toh bhi bot start ho jaye (Local testing ke liye)
+def run_app():
+    """Starts Flask in a separate thread and Pyrogram synchronously in the main thread."""
+    import asyncio
+    import threading
+    
+    # Set event loop policy for Python 3.12 compatibility
+    if os.name == "nt":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    else:
+        asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    # Run Flask in a daemon thread so it doesn't block Pyrogram
+    def start_flask():
+        app.run(host="0.0.0.0", port=config.PORT, use_reloader=False)
+
+    flask_thread = threading.Thread(target=start_flask, daemon=True)
+    flask_thread.start()
+    logger.info(f"Flask started on 0.0.0.0:{config.PORT}")
+
+    # Run Pyrogram (blocking)
+    logger.info("Starting Pyrogram bot...")
+    bot.run()
+
 if __name__ == "__main__":
-    start_bot_if_needed()
-    flask_app.run(host="0.0.0.0", port=config.PORT, use_reloader=False)
+    run_app()
