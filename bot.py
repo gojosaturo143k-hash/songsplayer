@@ -204,18 +204,16 @@ async def callback_handler(client, callback_query):
 # PYROGRAM SAFE RUNNER
 # ==========================================
 def run_pyrogram_safely():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     print("🚀 Attempting to start Telegram Bot...")
     try:
-        # Yeh API_ID check hai
         if not config.API_ID or not config.API_HASH or not config.BOT_TOKEN:
             print("❌ Missing BOT_TOKEN, API_ID, or API_HASH in environment variables.")
             return
             
-        loop.run_until_complete(app.start())
-        print("✅ Telegram Bot is LIVE and listening!")
-        loop.run_forever()
+        # YEH LINE SABSE ZAROORI HAI: Yeh bot ko forcefully start karega aur agar koi bhi 
+        # internal error hoga (API_ID galat, token invalid, etc) toh woh directly yahan print hoga.
+        app.run()
+        
     except Exception as e:
         print(f"❌ Bot failed to start: {e}")
 
