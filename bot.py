@@ -1,10 +1,10 @@
 import asyncio
 import json
 import random
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from asgiref.wsgi import WsgiToAsgi
 from firebase_admin import credentials, firestore, initialize_app
 from flask import Flask
 from pyrogram import Client, filters
@@ -29,7 +29,7 @@ except Exception as e:
     db = None
 
 # ==========================================
-# FLASK APP (Render Health Check)
+# FLASK APP (Health Check for Render)
 # ==========================================
 flask_app = Flask(__name__)
 
@@ -41,11 +41,8 @@ def index():
 def health():
     return "OK", 200
 
-# Convert WSGI (Flask) to ASGI so it can run with Uvicorn alongside Pyrogram
-asgi_app = WsgiToAsgi(flask_app)
-
 # ==========================================
-# PYROGRAM BOT CLIENT
+# PYROGRAM CLIENT
 # ==========================================
 app = Client(
     "royal_horse_race_bot",
@@ -58,8 +55,7 @@ app = Client(
 # HELPER FUNCTIONS
 # ==========================================
 def get_or_create_user(telegram_id: int, username: str):
-    if not db:
-        return None, None
+    if not db: return None, None
     user_ref = db.collection("users").document(str(telegram_id))
     user_doc = user_ref.get()
     if not user_doc.exists:
@@ -203,18 +199,28 @@ async def callback_handler(client, callback_query):
     await callback_query.answer()
 
 # ==========================================
-# MAIN LIFECYCLE (Factory for Uvicorn)
+# BACKGROUND BOT RUNNER (ISOLATED THREAD)
 # ==========================================
-async def main_lifecycle():
-    # 1. Start Pyrogram First
-    print("Starting Pyrogram...")
-    await app.start()
-    print("Pyrogram started successfully!")
-    
-    # 2. Yield the ASGI Flask app to Uvicorn to serve on the port
-    print(f"Starting Flask on port {config.PORT}...")
-    yield asgi_app
-    
-    # 3. Stop gracefully when Render shuts down the service
-    print("Shutting down Pyrogram...")
-    await app.stop()
+def run_bot_in_thread():
+    # Is thread ko apna khud ka pura Async Event Loop dedo
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(app.start())
+        loop.run_forever()
+    except Exception as e:
+        print(f"Bot thread stopped: {e}")
+
+# ==========================================
+# AUTO-START TRIGGER (Runs during module load)
+# ==========================================
+# Gunicorn jab bhi bot.py load karta hai, yeh line auto-execute hoti hai.
+# Yeh bot ko ek chhupi hui background thread mein daal deta hai.
+# Gunicorn ka apna sync thread safe rahega, aur bot ka apna async loop safe rahega.
+threading.Thread(target=run_bot_in_thread, daemon=True).start()
+
+# ==========================================
+# LOCAL TESTING ONLY
+# ==========================================
+if __name__ == "__main__":
+    flask_app.run(host="0.0.0.0", port=config.PORT)
