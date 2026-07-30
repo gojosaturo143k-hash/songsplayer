@@ -1,27 +1,17 @@
 import os
+import json
 
-# ============================
-# Telegram Bot
-# ============================
+# Telegram Configuration
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-API_ID = int(os.environ.get("API_ID", "0"))
+API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
-
-# ============================
-# Website
-# ============================
 WEB_URL = os.environ.get("WEB_URL", "https://example.com")
 
-# ============================
-# Firebase
-# ============================
-# Render Environment Variable me poora Service Account JSON
-# ek hi line me paste karna.
-FIREBASE_CREDENTIALS_JSON = os.environ.get(
-    "FIREBASE_CREDENTIALS_JSON", ""
-)
+# Render Configuration
+PORT = int(os.environ.get("PORT", 5000))
 
-# ============================
-# Flask / Render
-# ============================
-PORT = int(os.environ.get("PORT", 10000))
+# Firebase Configuration
+FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS_JSON", "{}")
+
+# Link Code Configuration
+LINK_CODE_EXPIRATION_MINUTES = 10
