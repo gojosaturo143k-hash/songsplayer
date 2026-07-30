@@ -1,1 +1,1 @@
-web: uvicorn bot:flask_app --host 0.0.0.0 --port $PORT --factory
+web: gunicorn bot:flask_app
