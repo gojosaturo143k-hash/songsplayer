@@ -5,9 +5,10 @@ from datetime import datetime, timezone, timedelta
 
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
-from flask import Flask, jsonify
+from flask import Flask
 import firebase_admin
 from firebase_admin import credentials, firestore
+import gunicorn.app.base
 
 import config
 
@@ -263,33 +264,42 @@ async def link_callback(client, callback_query):
     await callback_query.answer()
 
 
-# --- Application Runner ---
+# --- Gunicorn Integration ---
 
-def run_app():
-    """Starts Flask in a separate thread and Pyrogram synchronously in the main thread."""
+def post_worker_init(worker):
+    """Hook that starts Pyrogram when each Gunicorn worker spawns."""
     import asyncio
     import threading
     
-    # Set event loop policy for Python 3.12 compatibility
-    if os.name == "nt":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    else:
-        asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+    def run_bot():
+        try:
+            logger.info("Starting Pyrogram bot...")
+            bot.run()
+        except Exception as e:
+            logger.error(f"Pyrogram runtime error: {e}")
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
 
-    # Run Flask in a daemon thread so it doesn't block Pyrogram
-    def start_flask():
-        app.run(host="0.0.0.0", port=config.PORT, use_reloader=False)
+# Inject hook into Gunicorn's configuration
+if not hasattr(gunicorn.app.base.BaseApplication, 'cfg'):
+    class StandaloneApp(gunicorn.app.base.BaseApplication):
+        def __init__(self, app, options=None):
+            self.options = options or {}
+            self.application = app
+            super().__init__()
 
-    flask_thread = threading.Thread(target=start_flask, daemon=True)
-    flask_thread.start()
-    logger.info(f"Flask started on 0.0.0.0:{config.PORT}")
+        def load_config(self):
+            for key, value in self.options.items():
+                if key in self.cfg.settings and value is not None:
+                    self.cfg.set(key.lower(), value)
 
-    # Run Pyrogram (blocking)
-    logger.info("Starting Pyrogram bot...")
-    bot.run()
+        def load(self):
+            return self.application
 
-if __name__ == "__main__":
-    run_app()
+    StandaloneApp(app, {
+        'bind': f'0.0.0.0:{config.PORT}',
+        'workers': 1,
+        'threads': 2,
+        'post_worker_init': post_worker_init
+    }).run()
