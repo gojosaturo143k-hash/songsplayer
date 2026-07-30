@@ -208,6 +208,11 @@ def run_pyrogram_safely():
     asyncio.set_event_loop(loop)
     print("🚀 Attempting to start Telegram Bot...")
     try:
+        # Yeh API_ID check hai
+        if not config.API_ID or not config.API_HASH or not config.BOT_TOKEN:
+            print("❌ Missing BOT_TOKEN, API_ID, or API_HASH in environment variables.")
+            return
+            
         loop.run_until_complete(app.start())
         print("✅ Telegram Bot is LIVE and listening!")
         loop.run_forever()
